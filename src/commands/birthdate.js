@@ -59,7 +59,7 @@ class BirthdateCommand {
     let message = "📋 **DAFTAR BIRTHDATE**\n\n";
     data.forEach((item) => {
       const age = birthdateService.calculateAge(item.birthdate);
-      message += `👤 ${item.name}\n📅 ${formatDate(item.birthdate)}\n🎂 ${age} tahun\n\n`;
+      message += `👤 ${item.name}\n`;
     });
     message += `📁 Total: ${data.length} data`;
 
