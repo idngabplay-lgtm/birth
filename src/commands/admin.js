@@ -1,10 +1,8 @@
 const adminService = require("../services/adminService");
 const birthdateService = require("../services/birthdateService");
 const employeeService = require("../services/employeeService");
-const resourceService = require("../services/resourceService");
 
 class AdminCommand {
-  // ===== SELF ADMIN =====
   async handleSelfAdmin(sock, sender, isAdmin) {
     try {
       if (isAdmin) {
@@ -47,7 +45,6 @@ class AdminCommand {
     }
   }
 
-  // ===== LIST REQUESTS =====
   async handleListRequests(sock, sender, isAdmin) {
     try {
       if (!isAdmin) {
@@ -88,7 +85,6 @@ class AdminCommand {
     }
   }
 
-  // ===== ACCEPT ADMIN =====
   async handleAcceptAdmin(sock, sender, messageText, isAdmin) {
     try {
       if (!isAdmin) {
@@ -118,12 +114,14 @@ class AdminCommand {
       // Notify the new admin
       if (result.success && result.data) {
         try {
+          // Try to send to phone number
           const newAdminJid = result.data.number + "@s.whatsapp.net";
           await sock.sendMessage(newAdminJid, {
             text: `🎉 *SELAMAT!*\n\nPermintaan admin Anda telah DISETUJUI!\n\nAnda sekarang adalah admin bot.\nKetik /help untuk melihat semua perintah admin.`,
           });
         } catch (e) {
           console.log("Failed to notify new admin:", e.message);
+          // Try sending via LID if available
           if (result.data.lid) {
             try {
               await sock.sendMessage(result.data.lid + "@lid", {
@@ -143,7 +141,6 @@ class AdminCommand {
     }
   }
 
-  // ===== REJECT ADMIN =====
   async handleRejectAdmin(sock, sender, messageText, isAdmin) {
     try {
       if (!isAdmin) {
@@ -170,6 +167,7 @@ class AdminCommand {
         text: result.message,
       });
 
+      // Notify the rejected user
       if (result.success && result.data) {
         try {
           const rejectedJid = result.data.number + "@s.whatsapp.net";
@@ -184,7 +182,10 @@ class AdminCommand {
                 text: `❌ *MAAF*\n\nPermintaan admin Anda telah DITOLAK.\n\nSilakan hubungi admin untuk informasi lebih lanjut.`,
               });
             } catch (e2) {
-              console.log("Failed to notify rejected user via LID:", e2.message);
+              console.log(
+                "Failed to notify rejected user via LID:",
+                e2.message,
+              );
             }
           }
         }
@@ -197,7 +198,6 @@ class AdminCommand {
     }
   }
 
-  // ===== ADD ADMIN =====
   async handleAddAdmin(sock, sender, number, isAdmin) {
     try {
       if (!isAdmin) {
@@ -226,7 +226,6 @@ class AdminCommand {
     }
   }
 
-  // ===== LIST ADMIN =====
   async handleListAdmin(sock, sender, isAdmin) {
     try {
       if (!isAdmin) {
@@ -241,7 +240,8 @@ class AdminCommand {
 
       let message = "🔐 **DAFTAR ADMIN**\n\n";
       admins.forEach((admin, index) => {
-        const isDefault = admin === defaultAdmin || admin === `lid_${defaultAdmin}`;
+        const isDefault =
+          admin === defaultAdmin || admin === `lid_${defaultAdmin}`;
         const isLID = admin.startsWith("lid_");
         message += `${index + 1}. ${admin}${isDefault ? " (DEFAULT)" : ""}${isLID ? " 🔑LID" : ""}\n`;
       });
@@ -256,7 +256,6 @@ class AdminCommand {
     }
   }
 
-  // ===== REMOVE ADMIN =====
   async handleRemoveAdmin(sock, sender, number, isAdmin) {
     try {
       if (!isAdmin) {
@@ -285,7 +284,6 @@ class AdminCommand {
     }
   }
 
-  // ===== STATUS =====
   async handleStatus(sock, sender, isAdmin) {
     try {
       const birthStats = await birthdateService.getStats();
@@ -316,14 +314,14 @@ class AdminCommand {
     }
   }
 
-  // ===== HELP =====
   async handleHelp(sock, sender, isAdmin) {
     try {
+      // Double check admin status for display
       const senderNumber = sender.split("@")[0].replace(/\D/g, "");
       const actualAdminStatus = await adminService.isAdmin(senderNumber);
 
       let helpText =
-        `🤖 *DAFTAR PERINTAH BOT*\n\n` +
+        `🤖 *DAFTAR PERINTAH*\n\n` +
         `📝 *Birthdate:*\n` +
         `/setBirth Nama | YYYY-MM-DD\n` +
         `   ➜ Tambah data birthdate\n` +
@@ -340,12 +338,12 @@ class AdminCommand {
         `/countBirth\n` +
         `   ➜ Statistik data\n\n` +
         `👥 *Employee (HR):*\n` +
-        `/addEmployee Nama | Posisi | Dept | YYYY-MM-DD | NoHP\n` +
+        `/addEmployee Nama | Posisi | Dept | YYYY-MM-DD\n` +
         `/listEmployee\n` +
         `/employeeStats\n` +
         `/workAnniversary\n` +
         `/searchEmployee Dept\n\n` +
-        `🔑 *Admin Request:*\n` +
+        `🔑 **Admin Request:**\n` +
         `/selfAdmin\n` +
         `   ➜ Minta menjadi admin\n`;
 
@@ -367,30 +365,7 @@ class AdminCommand {
           `/listAdmin\n` +
           `   ➜ Lihat daftar admin\n` +
           `/removeAdmin 628XXXXXXXXXX\n` +
-          `   ➜ Hapus admin\n\n` +
-          `📁 *Resource Center (Admin):*\n` +
-          `/resource\n` +
-          `   ➜ Lihat semua folder & PIC\n` +
-          `/assignPIC [ID] | [Nama]\n` +
-          `   ➜ Assign PIC ke folder\n` +
-          `/confirmAssign [ID] | [YA/TIDAK]\n` +
-          `   ➜ Konfirmasi assign\n` +
-          `/selectName [ID] | [Angka]\n` +
-          `   ➜ Pilih nama dari multiple match\n` +
-          `/deleteAssign [ID] | [Password]\n` +
-          `   ➜ Hapus assign (password: 070513)\n` +
-          `/folderDetail [ID]\n` +
-          `   ➜ Detail folder dengan tasks\n` +
-          `/addTask [ID] | [Task] | [Priority] | [Due]\n` +
-          `   ➜ Tambah task\n` +
-          `/updateTask [ID] | [Status]\n` +
-          `   ➜ Update task\n` +
-          `/report\n` +
-          `   ➜ Report lengkap\n` +
-          `/changePassword [Lama] | [Baru]\n` +
-          `   ➜ Ganti password deleteAssign\n` +
-          `/logs [FolderID]\n` +
-          `   ➜ Lihat log assignment\n`;
+          `   ➜ Hapus admin\n`;
       } else {
         helpText +=
           `\n🔐 *Admin (❌ Tidak Aktif):*\n` +
