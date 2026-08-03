@@ -418,6 +418,61 @@ async function startSock() {
           await adminCommand.handleAddAdmin(sock, sender, number, isAdmin);
           return;
         }
+        // ===== RESOURCE CENTER - NEW COMMANDS =====
+        if (messageText.startsWith("/confirmAssign")) {
+          await resourceCommand.handleConfirmAssign(
+            sock,
+            sender,
+            messageText,
+            isAdmin,
+          );
+          return;
+        }
+
+        if (messageText.startsWith("/selectName")) {
+          await resourceCommand.handleSelectName(
+            sock,
+            sender,
+            messageText,
+            isAdmin,
+          );
+          return;
+        }
+
+        if (messageText.startsWith("/deleteAssign")) {
+          await resourceCommand.handleDeleteAssign(
+            sock,
+            sender,
+            messageText,
+            isAdmin,
+          );
+          return;
+        }
+
+        if (messageText.startsWith("/changePassword")) {
+          await resourceCommand.handleChangePassword(
+            sock,
+            sender,
+            messageText,
+            isAdmin,
+          );
+          return;
+        }
+
+        if (messageText.startsWith("/logs")) {
+          await resourceCommand.handleLogs(sock, sender, messageText, isAdmin);
+          return;
+        }
+
+        if (messageText.startsWith("/resetPassword")) {
+          await resourceCommand.handleResetPassword(
+            sock,
+            sender,
+            messageText,
+            isAdmin,
+          );
+          return;
+        }
 
         if (msgLower === "/listadmin") {
           await adminCommand.handleListAdmin(sock, sender, isAdmin);
