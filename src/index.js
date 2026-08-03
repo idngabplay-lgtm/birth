@@ -1,531 +1,488 @@
-const {
-  makeWASocket,
-  useMultiFileAuthState,
-  DisconnectReason,
-  Browsers,
-} = require("@whiskeysockets/baileys");
-const { Boom } = require("@hapi/boom");
-const QRCode = require("qrcode-terminal");
-require("dotenv").config();
+const resourceService = require("../services/resourceService");
 
-// Import services
-const adminService = require("./services/adminService");
-const birthdateService = require("./services/birthdateService");
-const employeeService = require("./services/employeeService");
+const pendingAssignments = {};
 
-// Import commands
-const birthdateCommand = require("./commands/birthdate");
-const employeeCommand = require("./commands/employee");
-const adminCommand = require("./commands/admin");
+class ResourceCommand {
+  async handleShowCategories(sock, sender) {
+    try {
+      const categories = await resourceService.getAllCategories();
+      
+      let message = "📁 **BRAIN RESOURCE CENTER**\n\n";
+      
+      const typeMap = {
+        'internal': '📂 INTERNAL',
+        'external': '🌐 EXTERNAL',
+        'sponsorship': '🤝 SPONSORSHIP',
+        'business_capital': '💰 BUSINESS CAPITAL'
+      };
 
-// Import resource command (dengan fallback)
-let resourceCommand;
-try {
-  resourceCommand = require("./commands/resourceCommand");
-} catch (error) {
-  console.log("⚠️ resourceCommand not found, creating dummy...");
-  resourceCommand = {
-    handleShowCategories: async (sock, sender) => {
-      await sock.sendMessage(sender, {
-        text: "❌ Resource Center belum di-setup. Jalankan SQL di Supabase terlebih dahulu.",
-      });
-    },
-    handleAssignPIC: async (sock, sender, messageText, isAdmin) => {
-      await sock.sendMessage(sender, {
-        text: "❌ Fitur assignPIC belum di-setup.",
-      });
-    },
-    handleFolderDetail: async (sock, sender, folderId) => {
-      await sock.sendMessage(sender, {
-        text: "❌ Fitur folderDetail belum di-setup.",
-      });
-    },
-    handleAddTask: async (sock, sender, messageText, isAdmin) => {
-      await sock.sendMessage(sender, {
-        text: "❌ Fitur addTask belum di-setup.",
-      });
-    },
-    handleUpdateTask: async (sock, sender, messageText, isAdmin) => {
-      await sock.sendMessage(sender, {
-        text: "❌ Fitur updateTask belum di-setup.",
-      });
-    },
-    handleReport: async (sock, sender, isAdmin) => {
-      await sock.sendMessage(sender, {
-        text: "❌ Fitur report belum di-setup.",
-      });
-    },
-  };
-}
-
-// Import birthday wisher
-const birthdayWisher = require("./services/birthdayWisher");
-
-// Global error handler
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("❌ Unhandled Rejection at:", promise);
-  console.error("📝 Reason:", reason);
-});
-
-process.on("uncaughtException", (error) => {
-  console.error("❌ Uncaught Exception:", error);
-});
-
-// ===== VARIABLES =====
-let pairingCodeRequested = false;
-let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 10;
-
-async function startSock() {
-  try {
-    console.log("🔄 Starting WhatsApp Bot...");
-
-    const { state, saveCreds } =
-      await useMultiFileAuthState("auth_info_baileys");
-
-    const sock = makeWASocket({
-      auth: state,
-      browser: Browsers.macOS("Desktop"),
-      syncFullHistory: false,
-      markOnlineOnConnect: true,
-      printQRInTerminal: false,
-      connectTimeoutMs: 60000,
-      defaultQueryTimeoutMs: 60000,
-      getMessage: async () => {
-        return undefined;
-      },
-    });
-    sock.ev.on("creds.update", saveCreds);
-
-    sock.ev.on("connection.update", async (update) => {
-      try {
-        const { connection, lastDisconnect, qr, pairingCode } = update;
-
-        // ===== PAIRING CODE =====
-        if (pairingCode && !pairingCodeRequested) {
-          pairingCodeRequested = true;
-          console.log("\n🎯 =========================================");
-          console.log(`📱 PAIRING CODE: ${pairingCode}`);
-          console.log("===========================================");
-          console.log("\n📝 CARA:");
-          console.log("1. Buka WhatsApp di HP");
-          console.log("2. Tap ⋮ (3 dots) → Perangkat Tertaut");
-          console.log("3. Tap 'Tautkan Perangkat'");
-          console.log("4. Tap 'Tautkan dengan Nomor Telepon'");
-          console.log(`5. Masukkan kode: ${pairingCode}`);
-          console.log("6. Tunggu koneksi...\n");
+      for (const cat of categories) {
+        const folders = await resourceService.getFoldersByCategory(cat.id);
+        message += `*${typeMap[cat.type] || cat.name}*\n`;
+        for (const folder of folders) {
+          const pic = await resourceService.getFolderWithPIC(folder.id);
+          const picName = pic.resource_pics?.[0]?.pic_name || 'Belum diassign';
+          message += `   📁 ${folder.name}\n`;
+          message += `      👤 PIC: ${picName}\n`;
         }
-
-        // ===== QR CODE (Backup) =====
-        if (qr) {
-          console.log("\n📱 ATAU SCAN QR CODE:");
-          QRCode.generate(qr, { small: true });
-          console.log("");
-        }
-
-        // ===== CONNECTION CLOSE =====
-        if (connection === "close") {
-          const shouldReconnect =
-            (lastDisconnect?.error instanceof Boom)?.output?.statusCode !==
-            DisconnectReason.loggedOut;
-
-          // Reset pairing code flag
-          pairingCodeRequested = false;
-
-          // Check if it's a 405 error (IP/Device blocked)
-          const is405Error = lastDisconnect?.error?.data?.reason === "405";
-
-          if (is405Error) {
-            reconnectAttempts++;
-            console.log(
-              `\n🚫 ERROR 405: IP/Device terblokir sementara (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`,
-            );
-            console.log("💡 SOLUSI:");
-            console.log("1. TUNGGU 15-30 MENIT");
-            console.log("2. Pakai VPN atau hotspot HP");
-            console.log("3. Logout dari WhatsApp Web di HP");
-            console.log("4. Hapus folder auth_info_baileys");
-            console.log("5. Jalankan ulang\n");
-
-            if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-              console.log(
-                "❌ Terlalu banyak percobaan. Silakan tunggu 30 menit dan coba lagi.",
-              );
-              return;
-            }
-
-            // Wait longer for 405 errors (30 seconds)
-            setTimeout(startSock, 30000);
-          } else {
-            console.log(
-              "Connection closed due to ",
-              lastDisconnect?.error,
-              ", reconnecting ",
-              shouldReconnect,
-            );
-
-            if (shouldReconnect) {
-              reconnectAttempts = 0;
-              setTimeout(startSock, 5000);
-            } else {
-              console.log(
-                "Logged out, please delete auth_info_baileys folder and run again",
-              );
-            }
-          }
-        }
-        // ===== CONNECTION OPEN =====
-        else if (connection === "open") {
-          reconnectAttempts = 0;
-          pairingCodeRequested = false;
-
-          console.log("\n✅ Connected to WhatsApp!");
-          console.log("📱 Bot siap menerima perintah!");
-          console.log("💡 Ketik /help untuk melihat daftar perintah");
-          console.log("🎂 Birthday Wisher is active!\n");
-
-          // Start birthday wisher
-          try {
-            await birthdayWisher.scheduleBirthdayWishes(sock);
-          } catch (error) {
-            console.error("Error starting birthday wisher:", error.message);
-          }
-
-          // Cek ulang tahun hari ini
-          try {
-            const todayBirthdays = await birthdateService.getToday();
-            if (todayBirthdays.length > 0) {
-              console.log(
-                `🎂 Hari ini ${todayBirthdays.length} orang berulang tahun!`,
-              );
-            }
-          } catch (error) {
-            console.error("Error checking birthdays:", error.message);
-          }
-        }
-      } catch (error) {
-        console.error("Error in connection.update handler:", error);
+        message += '\n';
       }
-    });
 
-    // ========== HANDLE INCOMING MESSAGES ==========
-    sock.ev.on("messages.upsert", async (m) => {
-      try {
-        const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+      const people = await resourceService.getPeopleByRole();
+      message += `\n👥 **DAFTAR PEOPLE BRAIN**\n`;
+      message += `👑 HEAD: ${people.head.join(', ')}\n`;
+      message += `📂 INTERNAL: ${people.internal.join(', ')}\n`;
+      message += `🌐 EXTERNAL: ${people.external.join(', ')}\n`;
+      message += `🤝 SPONSORSHIP: ${people.sponsorship.join(', ')}\n`;
+      message += `💰 BUSINESS CAPITAL: ${people.business_capital.join(', ')}\n`;
 
-        const sender = msg.key.remoteJid;
-        const messageText =
-          msg.message.conversation ||
-          msg.message.extendedTextMessage?.text ||
-          msg.message.imageMessage?.caption ||
-          "";
+      message += `\n📝 *Cara Assign PIC:*\n`;
+      message += `/assignPIC [Folder ID] | [Nama PIC]\n\n`;
+      message += `📋 *Lihat Detail Folder:*\n`;
+      message += `/folderDetail [Folder ID]\n\n`;
+      message += `🗑️ *Hapus Assign:*\n`;
+      message += `/deleteAssign [Folder ID] | [Password]\n\n`;
+      message += `🔑 *Ganti Password Delete:*\n`;
+      message += `/changePassword [Lama] | [Baru]`;
 
-        if (!messageText) return;
+      await sock.sendMessage(sender, { text: message });
+    } catch (error) {
+      await sock.sendMessage(sender, {
+        text: `❌ Error: ${error.message}`
+      });
+    }
+  }
 
-        console.log(
-          `📩 Message from ${sender}: ${messageText.substring(0, 50)}...`,
-        );
+  // ===== ASSIGN PIC (TANPA ADMIN CHECK) =====
+  async handleAssignPIC(sock, sender, messageText) {
+    const parts = messageText.substring(11).trim().split('|').map(p => p.trim());
+    
+    if (parts.length < 2) {
+      await sock.sendMessage(sender, {
+        text: "❌ Format salah!\n\nGunakan:\n/assignPIC [Folder ID] | [Nama PIC]\n\nContoh:\n/assignPIC 1 | Reynaldo Lamhot Silalahi\n\n📋 Untuk melihat daftar People, gunakan /resource"
+      });
+      return;
+    }
 
-        // Clean sender number
-        let senderNumber = sender;
-        if (sender.includes("@")) {
-          senderNumber = sender.split("@")[0];
-        }
-        senderNumber = senderNumber.replace(/\D/g, "");
-
-        console.log(`🧹 Clean sender: ${senderNumber}`);
-
-        // Check if admin
-        let isAdmin = false;
-        try {
-          isAdmin = await adminService.isAdmin(senderNumber);
-          console.log(`🔑 Admin status for ${senderNumber}: ${isAdmin}`);
-        } catch (error) {
-          console.error("Error checking admin status:", error.message);
-          isAdmin = false;
-        }
-
-        // ===== COMMANDS =====
-        const msgLower = messageText.toLowerCase();
-
-        // Self Admin
-        if (msgLower === "/selfadmin") {
-          await adminCommand.handleSelfAdmin(sock, sender, isAdmin);
-          return;
-        }
-
-        if (msgLower === "/listrequests") {
-          await adminCommand.handleListRequests(sock, sender, isAdmin);
-          return;
-        }
-
-        if (messageText.startsWith("/acceptAdmin")) {
-          await adminCommand.handleAcceptAdmin(
-            sock,
-            sender,
-            messageText,
-            isAdmin,
-          );
-          return;
-        }
-
-        if (messageText.startsWith("/rejectAdmin")) {
-          await adminCommand.handleRejectAdmin(
-            sock,
-            sender,
-            messageText,
-            isAdmin,
-          );
-          return;
-        }
-
-        // Resource Center
-        if (msgLower === "/resource") {
-          await resourceCommand.handleShowCategories(sock, sender);
-          return;
-        }
-
-        if (messageText.startsWith("/assignPIC")) {
-          await resourceCommand.handleAssignPIC(
-            sock,
-            sender,
-            messageText,
-            isAdmin,
-          );
-          return;
-        }
-
-        if (messageText.startsWith("/folderDetail")) {
-          const folderId = messageText.substring(13).trim();
-          await resourceCommand.handleFolderDetail(sock, sender, folderId);
-          return;
-        }
-
-        if (messageText.startsWith("/addTask")) {
-          await resourceCommand.handleAddTask(
-            sock,
-            sender,
-            messageText,
-            isAdmin,
-          );
-          return;
-        }
-
-        if (messageText.startsWith("/updateTask")) {
-          await resourceCommand.handleUpdateTask(
-            sock,
-            sender,
-            messageText,
-            isAdmin,
-          );
-          return;
-        }
-
-        if (msgLower === "/report") {
-          await resourceCommand.handleReport(sock, sender, isAdmin);
-          return;
-        }
-
-        // Birthdate
-        if (messageText.startsWith("/setBirth")) {
-          await birthdateCommand.handleSetBirth(sock, sender, messageText);
-          return;
-        }
-
-        if (msgLower === "/listbirth") {
-          await birthdateCommand.handleListBirth(sock, sender);
-          return;
-        }
-
-        if (messageText.startsWith("/searchBirth")) {
-          const keyword = messageText.substring(13).trim();
-          await birthdateCommand.handleSearchBirth(sock, sender, keyword);
-          return;
-        }
-
-        if (msgLower === "/birthtoday") {
-          await birthdateCommand.handleBirthToday(sock, sender);
-          return;
-        }
-
-        if (msgLower === "/birthmonth") {
-          await birthdateCommand.handleBirthMonth(sock, sender);
-          return;
-        }
-
-        if (msgLower === "/upcomingbirth") {
-          await birthdateCommand.handleUpcomingBirth(sock, sender);
-          return;
-        }
-
-        if (msgLower === "/countbirth") {
-          await birthdateCommand.handleCountBirth(sock, sender);
-          return;
-        }
-
-        if (messageText.startsWith("/editBirth")) {
-          await birthdateCommand.handleEditBirth(
-            sock,
-            sender,
-            messageText,
-            isAdmin,
-          );
-          return;
-        }
-
-        if (messageText.startsWith("/deleteBirth")) {
-          const name = messageText.substring(13).trim();
-          await birthdateCommand.handleDeleteBirth(sock, sender, name, isAdmin);
-          return;
-        }
-
-        // Employee
-        if (messageText.startsWith("/addEmployee")) {
-          await employeeCommand.handleAddEmployee(
-            sock,
-            sender,
-            messageText,
-            isAdmin,
-          );
-          return;
-        }
-
-        if (msgLower === "/listemployee") {
-          await employeeCommand.handleListEmployees(sock, sender);
-          return;
-        }
-
-        if (msgLower === "/employeestats") {
-          await employeeCommand.handleEmployeeStats(sock, sender);
-          return;
-        }
-
-        if (msgLower === "/workanniversary") {
-          await employeeCommand.handleWorkAnniversary(sock, sender);
-          return;
-        }
-
-        if (messageText.startsWith("/searchEmployee")) {
-          const keyword = messageText.substring(16).trim();
-          await employeeCommand.handleSearchEmployee(sock, sender, keyword);
-          return;
-        }
-
-        // Admin
-        if (messageText.startsWith("/addAdmin")) {
-          const number = messageText.substring(10).trim();
-          await adminCommand.handleAddAdmin(sock, sender, number, isAdmin);
-          return;
-        }
-        // ===== RESOURCE CENTER - NEW COMMANDS =====
-        if (messageText.startsWith("/confirmAssign")) {
-          await resourceCommand.handleConfirmAssign(
-            sock,
-            sender,
-            messageText,
-            isAdmin,
-          );
-          return;
-        }
-
-        if (messageText.startsWith("/selectName")) {
-          await resourceCommand.handleSelectName(
-            sock,
-            sender,
-            messageText,
-            isAdmin,
-          );
-          return;
-        }
-
-        if (messageText.startsWith("/deleteAssign")) {
-          await resourceCommand.handleDeleteAssign(
-            sock,
-            sender,
-            messageText,
-            isAdmin,
-          );
-          return;
-        }
-
-        if (messageText.startsWith("/changePassword")) {
-          await resourceCommand.handleChangePassword(
-            sock,
-            sender,
-            messageText,
-            isAdmin,
-          );
-          return;
-        }
-
-        if (messageText.startsWith("/logs")) {
-          await resourceCommand.handleLogs(sock, sender, messageText, isAdmin);
-          return;
-        }
-
-        if (messageText.startsWith("/resetPassword")) {
-          await resourceCommand.handleResetPassword(
-            sock,
-            sender,
-            messageText,
-            isAdmin,
-          );
-          return;
-        }
-
-        if (msgLower === "/listadmin") {
-          await adminCommand.handleListAdmin(sock, sender, isAdmin);
-          return;
-        }
-
-        if (messageText.startsWith("/removeAdmin")) {
-          const number = messageText.substring(13).trim();
-          await adminCommand.handleRemoveAdmin(sock, sender, number, isAdmin);
-          return;
-        }
-
-        // General
-        if (msgLower === "/status") {
-          await adminCommand.handleStatus(sock, sender, isAdmin);
-          return;
-        }
-
-        if (msgLower === "/help") {
-          await adminCommand.handleHelp(sock, sender, isAdmin);
-          return;
-        }
-
-        // Unknown command
-        if (messageText.startsWith("/")) {
-          await sock.sendMessage(sender, {
-            text: "❓ Perintah tidak dikenal. Ketik /help untuk melihat daftar perintah.",
-          });
-        }
-      } catch (error) {
-        console.error("❌ Error processing message:", error);
-        try {
-          const sender = m.messages[0]?.key?.remoteJid;
-          if (sender) {
-            await sock.sendMessage(sender, {
-              text: "❌ Terjadi error saat memproses pesan. Silakan coba lagi.",
-            });
-          }
-        } catch (sendError) {
-          console.error("Error sending error message:", sendError);
-        }
+    const [folderId, picName] = parts;
+    
+    try {
+      const result = await resourceService.searchName(picName);
+      
+      if (!result.exact && result.matches.length === 0) {
+        await sock.sendMessage(sender, {
+          text: `❌ Nama "${picName}" tidak ditemukan di database People BRAIN.\n\n📋 Gunakan /resource untuk melihat daftar People yang tersedia.`
+        });
+        return;
       }
+      
+      if (result.matches.length > 1) {
+        let message = `🔍 *Beberapa nama ditemukan:*\n\n`;
+        result.matches.forEach((name, index) => {
+          message += `${index + 1}. ${name}\n`;
+        });
+        message += `\n📝 *Ketik angka pilihan Anda:*\n`;
+        message += `Contoh: /selectName [Folder ID] | [Angka]`;
+        
+        pendingAssignments[sender] = {
+          folderId: parseInt(folderId),
+          matches: result.matches,
+          step: 'select_name'
+        };
+        
+        await sock.sendMessage(sender, { text: message });
+        return;
+      }
+      
+      const selectedName = result.matches[0];
+      const folder = await resourceService.getFolderWithPIC(parseInt(folderId));
+      
+      pendingAssignments[sender] = {
+        folderId: parseInt(folderId),
+        selectedName: selectedName,
+        folderName: folder.name,
+        step: 'confirm'
+      };
+      
+      await sock.sendMessage(sender, {
+        text: `📋 *Konfirmasi Assign PIC*\n\n📁 Folder: ${folder.name}\n👤 Nama: ${selectedName}\n\n✅ Apakah Anda yakin? Ketik:\n/confirmAssign ${folderId} | YA`
+      });
+      
+    } catch (error) {
+      await sock.sendMessage(sender, {
+        text: `❌ Gagal assign PIC: ${error.message}`
+      });
+    }
+  }
+
+  // ===== CONFIRM ASSIGN (TANPA ADMIN CHECK) =====
+  async handleConfirmAssign(sock, sender, messageText) {
+    const parts = messageText.substring(14).trim().split('|').map(p => p.trim());
+    
+    if (parts.length < 2) {
+      await sock.sendMessage(sender, {
+        text: "❌ Format salah!\n\nGunakan:\n/confirmAssign [Folder ID] | [YA/TIDAK]\n\nContoh: /confirmAssign 1 | YA"
+      });
+      return;
+    }
+
+    const [folderId, answer] = parts;
+    const pending = pendingAssignments[sender];
+    
+    if (!pending || pending.folderId !== parseInt(folderId)) {
+      await sock.sendMessage(sender, {
+        text: "❌ Tidak ada permintaan assign yang pending untuk folder ini."
+      });
+      return;
+    }
+
+    if (answer.toUpperCase() !== 'YA') {
+      delete pendingAssignments[sender];
+      await sock.sendMessage(sender, { text: "❌ Assign PIC dibatalkan." });
+      return;
+    }
+
+    try {
+      await resourceService.assignPIC(parseInt(folderId), pending.selectedName, null);
+      const folder = await resourceService.getFolderWithPIC(parseInt(folderId));
+      
+      delete pendingAssignments[sender];
+      
+      await sock.sendMessage(sender, {
+        text: `✅ PIC berhasil diassign!\n\n📁 Folder: ${folder.name}\n👤 PIC: ${pending.selectedName}`
+      });
+      
+    } catch (error) {
+      await sock.sendMessage(sender, {
+        text: `❌ Gagal assign PIC: ${error.message}`
+      });
+    }
+  }
+
+  // ===== SELECT NAME (TANPA ADMIN CHECK) =====
+  async handleSelectName(sock, sender, messageText) {
+    const parts = messageText.substring(12).trim().split('|').map(p => p.trim());
+    
+    if (parts.length < 2) {
+      await sock.sendMessage(sender, {
+        text: "❌ Format salah!\n\nGunakan:\n/selectName [Folder ID] | [Angka]\n\nContoh: /selectName 1 | 2"
+      });
+      return;
+    }
+
+    const [folderId, indexStr] = parts;
+    const pending = pendingAssignments[sender];
+    
+    if (!pending || pending.folderId !== parseInt(folderId) || pending.step !== 'select_name') {
+      await sock.sendMessage(sender, {
+        text: "❌ Tidak ada permintaan seleksi nama yang pending."
+      });
+      return;
+    }
+
+    const index = parseInt(indexStr) - 1;
+    if (index < 0 || index >= pending.matches.length) {
+      await sock.sendMessage(sender, {
+        text: `❌ Angka tidak valid! Masukkan angka 1 - ${pending.matches.length}`
+      });
+      return;
+    }
+
+    const selectedName = pending.matches[index];
+    const folder = await resourceService.getFolderWithPIC(parseInt(folderId));
+    
+    pendingAssignments[sender] = {
+      folderId: parseInt(folderId),
+      selectedName: selectedName,
+      folderName: folder.name,
+      step: 'confirm'
+    };
+    
+    await sock.sendMessage(sender, {
+      text: `📋 *Konfirmasi Assign PIC*\n\n📁 Folder: ${folder.name}\n👤 Nama: ${selectedName}\n\n✅ Apakah Anda yakin? Ketik:\n/confirmAssign ${folderId} | YA`
     });
-  } catch (error) {
-    console.error("❌ Fatal error in startSock:", error);
-    setTimeout(startSock, 5000);
+  }
+
+  // ===== DELETE ASSIGN (TANPA ADMIN CHECK) =====
+  async handleDeleteAssign(sock, sender, messageText) {
+    const parts = messageText.substring(13).trim().split('|').map(p => p.trim());
+    
+    if (parts.length < 2) {
+      await sock.sendMessage(sender, {
+        text: "❌ Format salah!\n\nGunakan:\n/deleteAssign [Folder ID] | [Password]\n\nContoh: /deleteAssign 1 | 070513"
+      });
+      return;
+    }
+
+    const [folderId, password] = parts;
+    
+    try {
+      const result = await resourceService.deleteAssignment(parseInt(folderId), password, sender);
+      
+      if (result.success) {
+        await sock.sendMessage(sender, {
+          text: `${result.message}\n\n📁 Folder ID: ${folderId}`
+        });
+      } else {
+        await sock.sendMessage(sender, {
+          text: result.message
+        });
+      }
+    } catch (error) {
+      await sock.sendMessage(sender, {
+        text: `❌ Gagal menghapus assign: ${error.message}`
+      });
+    }
+  }
+
+  // ===== CHANGE PASSWORD (TANPA ADMIN CHECK) =====
+  async handleChangePassword(sock, sender, messageText) {
+    const parts = messageText.substring(16).trim().split('|').map(p => p.trim());
+    
+    if (parts.length < 2) {
+      await sock.sendMessage(sender, {
+        text: "❌ Format salah!\n\nGunakan:\n/changePassword [Password Lama] | [Password Baru]\n\nContoh: /changePassword 070513 | 123456"
+      });
+      return;
+    }
+
+    const [oldPassword, newPassword] = parts;
+    
+    try {
+      const currentPassword = await resourceService.getDeletePassword();
+      if (oldPassword !== currentPassword) {
+        await sock.sendMessage(sender, { text: "❌ Password lama salah!" });
+        return;
+      }
+      
+      await resourceService.updateDeletePassword(newPassword, sender);
+      
+      await sock.sendMessage(sender, {
+        text: `✅ Password berhasil diubah!\n\n🔑 Password baru: ${newPassword}`
+      });
+      
+    } catch (error) {
+      await sock.sendMessage(sender, {
+        text: `❌ Gagal mengubah password: ${error.message}`
+      });
+    }
+  }
+
+  // ===== LOGS (TANPA ADMIN CHECK) =====
+  async handleLogs(sock, sender, messageText) {
+    const folderId = messageText.substring(5).trim();
+    
+    try {
+      const logs = await resourceService.getAssignmentLogs(
+        folderId ? parseInt(folderId) : null,
+        20
+      );
+      
+      if (logs.length === 0) {
+        await sock.sendMessage(sender, { text: "📭 Belum ada log aktivitas." });
+        return;
+      }
+
+      let message = "📋 **ASSIGNMENT LOGS**\n\n";
+      for (const log of logs) {
+        const time = new Date(log.performed_at).toLocaleString('id-ID');
+        const actionEmoji = {
+          'assign': '✅',
+          'delete': '🗑️',
+          'update': '🔄',
+          'update_password': '🔑'
+        }[log.action] || '📌';
+        
+        message += `${actionEmoji} *${log.action.toUpperCase()}*\n`;
+        message += `   📁 ${log.resource_folders?.name || 'System'}\n`;
+        if (log.pic_name) {
+          message += `   👤 ${log.pic_name}\n`;
+        }
+        message += `   🕐 ${time}\n\n`;
+      }
+
+      message += `📊 Total: ${logs.length} logs`;
+      await sock.sendMessage(sender, { text: message });
+    } catch (error) {
+      await sock.sendMessage(sender, {
+        text: `❌ Error: ${error.message}`
+      });
+    }
+  }
+
+  // ===== FOLDER DETAIL (TANPA ADMIN CHECK) =====
+  async handleFolderDetail(sock, sender, folderId) {
+    try {
+      if (!folderId) {
+        await sock.sendMessage(sender, {
+          text: "❌ Masukkan Folder ID!\n\nContoh: /folderDetail 1"
+        });
+        return;
+      }
+
+      const folder = await resourceService.getFolderWithPIC(parseInt(folderId));
+      
+      if (!folder) {
+        await sock.sendMessage(sender, { text: "❌ Folder tidak ditemukan!" });
+        return;
+      }
+
+      const pic = folder.resource_pics?.[0];
+      const tasks = await resourceService.getTasksByFolder(parseInt(folderId));
+
+      let message = `📁 *FOLDER DETAIL*\n\n`;
+      message += `📂 Nama: ${folder.name}\n`;
+      message += `📝 Deskripsi: ${folder.description || '-'}\n`;
+      message += `👤 PIC: ${pic?.pic_name || 'Belum diassign'}\n`;
+      message += `📱 WhatsApp: ${pic?.pic_whatsapp || '-'}\n`;
+      message += `🕐 Diassign: ${pic?.assigned_at ? new Date(pic.assigned_at).toLocaleString('id-ID') : '-'}\n\n`;
+
+      if (tasks.length > 0) {
+        message += `📋 *TASKS:*\n`;
+        for (const task of tasks) {
+          const statusEmoji = {
+            'pending': '⏳',
+            'in_progress': '🔄',
+            'completed': '✅',
+            'review': '📝'
+          }[task.status] || '📌';
+          
+          const priorityEmoji = {
+            'high': '🔴',
+            'medium': '🟡',
+            'low': '🟢'
+          }[task.priority] || '⚪';
+          
+          message += `${statusEmoji} ${task.task_name}\n`;
+          message += `   ${priorityEmoji} ${task.priority} | ${task.status}\n`;
+          if (task.due_date) {
+            message += `   📅 Due: ${new Date(task.due_date).toLocaleDateString('id-ID')}\n`;
+          }
+          message += '\n';
+        }
+      } else {
+        message += `📭 Belum ada task untuk folder ini.\n\n`;
+      }
+
+      message += `🔧 *Actions:*\n`;
+      message += `/addTask [Folder ID] | [Task Name] | [Priority] | [Due Date]\n`;
+      message += `/updateTask [Task ID] | [Status]`;
+
+      await sock.sendMessage(sender, { text: message });
+    } catch (error) {
+      await sock.sendMessage(sender, {
+        text: `❌ Error: ${error.message}`
+      });
+    }
+  }
+
+  // ===== ADD TASK (TANPA ADMIN CHECK) =====
+  async handleAddTask(sock, sender, messageText) {
+    const parts = messageText.substring(9).trim().split('|').map(p => p.trim());
+    
+    if (parts.length < 2) {
+      await sock.sendMessage(sender, {
+        text: "❌ Format salah!\n\nGunakan:\n/addTask [Folder ID] | [Task Name] | [Priority] | [Due Date YYYY-MM-DD]\n\nContoh:\n/addTask 1 | Buat SOP Internal | high | 2024-12-31"
+      });
+      return;
+    }
+
+    const [folderId, taskName, priority = 'medium', dueDate] = parts;
+    
+    try {
+      await resourceService.createTask(
+        parseInt(folderId),
+        taskName,
+        null,
+        priority,
+        null,
+        dueDate || null
+      );
+      
+      await sock.sendMessage(sender, {
+        text: `✅ Task berhasil ditambahkan!\n\n📋 Task: ${taskName}\n📁 Folder ID: ${folderId}\n⚡ Priority: ${priority}\n📅 Due: ${dueDate || '-'}`
+      });
+    } catch (error) {
+      await sock.sendMessage(sender, {
+        text: `❌ Gagal menambah task: ${error.message}`
+      });
+    }
+  }
+
+  // ===== UPDATE TASK (TANPA ADMIN CHECK) =====
+  async handleUpdateTask(sock, sender, messageText) {
+    const parts = messageText.substring(12).trim().split('|').map(p => p.trim());
+    
+    if (parts.length < 2) {
+      await sock.sendMessage(sender, {
+        text: "❌ Format salah!\n\nGunakan:\n/updateTask [Task ID] | [Status]\n\nStatus: pending, in_progress, completed, review"
+      });
+      return;
+    }
+
+    const [taskId, status] = parts;
+    
+    try {
+      await resourceService.updateTaskStatus(parseInt(taskId), status);
+      
+      await sock.sendMessage(sender, {
+        text: `✅ Task status berhasil diupdate!\n\n📋 Task ID: ${taskId}\n📊 Status: ${status}`
+      });
+    } catch (error) {
+      await sock.sendMessage(sender, {
+        text: `❌ Gagal update task: ${error.message}`
+      });
+    }
+  }
+
+  // ===== REPORT (TANPA ADMIN CHECK) =====
+  async handleReport(sock, sender) {
+    try {
+      const assignments = await resourceService.getAllAssignments();
+      
+      let message = "📊 **BRAIN RESOURCE CENTER REPORT**\n\n";
+      
+      const grouped = {};
+      for (const assign of assignments) {
+        const catType = assign.resource_folders.resource_categories.type;
+        const catName = assign.resource_folders.resource_categories.name;
+        if (!grouped[catType]) {
+          grouped[catType] = { name: catName, folders: [] };
+        }
+        grouped[catType].folders.push({
+          name: assign.resource_folders.name,
+          pic: assign.pic_name,
+          phone: assign.pic_whatsapp
+        });
+      }
+
+      const typeLabels = {
+        'internal': '📂 INTERNAL',
+        'external': '🌐 EXTERNAL',
+        'sponsorship': '🤝 SPONSORSHIP',
+        'business_capital': '💰 BUSINESS CAPITAL'
+      };
+
+      for (const [type, data] of Object.entries(grouped)) {
+        message += `*${typeLabels[type] || data.name}*\n`;
+        for (const folder of data.folders) {
+          message += `   📁 ${folder.name}\n`;
+          message += `      👤 ${folder.pic}`;
+          if (folder.phone) message += ` (${folder.phone})`;
+          message += '\n';
+        }
+        message += '\n';
+      }
+
+      message += `📋 *Total Folders:* ${assignments.length}\n`;
+
+      await sock.sendMessage(sender, { text: message });
+    } catch (error) {
+      await sock.sendMessage(sender, {
+        text: `❌ Error: ${error.message}`
+      });
+    }
   }
 }
 
-// Start the bot
-console.log("🚀 Starting WhatsApp Bot...");
-console.log("📱 Bot akan menampilkan Pairing Code untuk login\n");
-startSock().catch((err) => {
-  console.error("❌ Bot crashed:", err);
-  setTimeout(startSock, 5000);
-});
+module.exports = new ResourceCommand();
